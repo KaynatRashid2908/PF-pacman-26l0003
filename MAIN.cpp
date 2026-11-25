@@ -1,7 +1,10 @@
 #include <SFML/Graphics.hpp>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <optional>
+#include <string>
+
 using namespace std;
 
 // ---------- Constants ----------
@@ -17,25 +20,36 @@ const int LEFT = 3;
 const int RIGHT = 4;
 const int PLAYER_SPEED_FRAMES = 8;
 
-const int MENU = 0, PLAYING = 1, GAME_OVER = 2;
+const int MENU = 0, PLAYING = 1, GAME_OVER = 2, WIN = 3;
 
-// Maze symbols (change here if you change maze.txt)
-const char WALL = 'X', PELLET = '*', POWER = '@', EMPTY = '_';
+// Maze symbols (must match maze.txt exactly)
+const char WALL = 'X', PELLET = '.', POWER = '0', EMPTY = '_';
 const char PLAYER_START = 'S', GHOST_START = 'E';
+constexpr int GHOST_COUNT = 4;
+const int PELLET_SCORE = 10;
+const int POWER_PELLET_SCORE = 50;      // spec: 50 points
+const int POWER_MODE_FRAMES = 300;      // 5 seconds at 60 FPS
 
 // ---------- Globals ----------
 char maze[ROWS][COLS];
-int gameState = PLAYING;
+int gameState = MENU;
 int playerRow = 0;
 int playerCol = 0;
-
+int ghostRows[GHOST_COUNT];
+int ghostCols[GHOST_COUNT];
 int requestedDirection = 0;   // 0 none, 1 up, 2 down, 3 left, 4 right
 int moveCounter = 0;
+
+int score = 0;
+int pelletsRemaining = 0;
+bool powerModeActive = false;
+int powerModeTimer = 0;
 
 bool mazeLoaded = false;
 string mazeError = "";
 
 // ---------- Functions ----------
+
 void handleInput(sf::RenderWindow& window)
 {
     while (const optional event = window.pollEvent())
@@ -46,51 +60,90 @@ void handleInput(sf::RenderWindow& window)
         }
         else if (const auto* key = event->getIf<sf::Event::KeyPressed>())
         {
-            if (key->code == sf::Keyboard::Key::Up ||
-                key->code == sf::Keyboard::Key::W)
-            {
+            if (key->code == sf::Keyboard::Key::Up || key->code == sf::Keyboard::Key::W)
                 requestedDirection = UP;
-            }
-            else if (key->code == sf::Keyboard::Key::Down ||
-                key->code == sf::Keyboard::Key::S)
-            {
+            else if (key->code == sf::Keyboard::Key::Down || key->code == sf::Keyboard::Key::S)
                 requestedDirection = DOWN;
-            }
-            else if (key->code == sf::Keyboard::Key::Left ||
-                key->code == sf::Keyboard::Key::A)
-            {
+            else if (key->code == sf::Keyboard::Key::Left || key->code == sf::Keyboard::Key::A)
                 requestedDirection = LEFT;
-            }
-            else if (key->code == sf::Keyboard::Key::Right ||
-                key->code == sf::Keyboard::Key::D)
-            {
+            else if (key->code == sf::Keyboard::Key::Right || key->code == sf::Keyboard::Key::D)
                 requestedDirection = RIGHT;
-            }
         }
     }
 }
+
 bool canMove(int row, int col)
 {
+    if (!mazeLoaded)
+    {
+        return false;
+    }
     if (row < 0 || row >= ROWS)
     {
         return false;
     }
-
     if (col < 0 || col >= COLS)
     {
         return false;
     }
-
     if (maze[row][col] == WALL)
     {
         return false;
     }
-
     return true;
+}
+
+// Eats whatever is under the player. Called after every successful player move.
+void checkPelletCollection()
+{
+    char currentTile = maze[playerRow][playerCol];
+
+    if (currentTile == PELLET)
+    {
+        score += PELLET_SCORE;
+        maze[playerRow][playerCol] = EMPTY;
+        pelletsRemaining--;
+    }
+    else if (currentTile == POWER)
+    {
+        score += POWER_PELLET_SCORE;
+        maze[playerRow][playerCol] = EMPTY;
+        pelletsRemaining--;
+
+        // Starts blue mode, or restarts the 5 seconds if it is already running.
+        powerModeActive = true;
+        powerModeTimer = POWER_MODE_FRAMES;
+    }
+
+    if (pelletsRemaining <= 0)
+    {
+        gameState = WIN;
+    }
+}
+
+void updatePowerMode()
+{
+    if (!powerModeActive)
+    {
+        return;
+    }
+
+    powerModeTimer--;
+
+    if (powerModeTimer <= 0)
+    {
+        powerModeTimer = 0;
+        powerModeActive = false;
+    }
 }
 
 void movePlayer()
 {
+    if (requestedDirection == 0)
+    {
+        return;
+    }
+
     moveCounter++;
 
     if (moveCounter < PLAYER_SPEED_FRAMES)
@@ -99,11 +152,6 @@ void movePlayer()
     }
 
     moveCounter = 0;
-
-    if (requestedDirection == 0)
-    {
-        return;
-    }
 
     int newRow = playerRow;
     int newCol = playerCol;
@@ -133,15 +181,24 @@ void movePlayer()
 
     playerRow = newRow;
     playerCol = newCol;
+
+    checkPelletCollection();
 }
 
 void updateGame()
 {
     switch (gameState)
     {
-    case MENU:      break;
-    case PLAYING:   break;
-    case GAME_OVER: break;
+    case MENU:
+        break;
+    case PLAYING:
+        updatePowerMode();
+        movePlayer();
+        break;
+    case GAME_OVER:
+        break;
+    case WIN:
+        break;
     }
 }
 
@@ -150,20 +207,34 @@ void drawGame(sf::RenderWindow& window)
     window.clear(sf::Color::Black);
     switch (gameState)
     {
-    case MENU:      break;
-    case PLAYING:   break;
-    case GAME_OVER: break;
+    case MENU:
+        break;
+    case PLAYING:
+        break;
+    case GAME_OVER:
+        break;
+    case WIN:
+        break;
     }
     window.display();
 }
+
 bool loadMaze()
 {
+    // Reset all game data so loading is also safe for a restart.
+    score = 0;
+    pelletsRemaining = 0;
+    powerModeActive = false;
+    powerModeTimer = 0;
+    requestedDirection = 0;
+    moveCounter = 0;
+    mazeLoaded = false;
+
     ifstream file("maze.txt");
 
     if (!file.is_open())
     {
         mazeError = "ERROR: Could not open maze.txt";
-        mazeLoaded = false;
         return false;
     }
 
@@ -173,21 +244,19 @@ bool loadMaze()
     if (!(file >> fileRows >> fileCols))
     {
         mazeError = "ERROR: First line must contain rows and columns";
-        mazeLoaded = false;
         return false;
     }
+    file.ignore(numeric_limits<streamsize>::max(), '\n');
 
     if (fileRows != ROWS || fileCols != COLS)
     {
         mazeError = "ERROR: Maze size must be 21 rows and 19 columns";
-        mazeLoaded = false;
         return false;
     }
 
-    bool playerFound = false;
+    int playerCount = 0;
     int ghostCount = 0;
 
-    // Read every maze row safely.
     for (int row = 0; row < ROWS; row++)
     {
         string line;
@@ -195,7 +264,6 @@ bool loadMaze()
         if (!getline(file, line))
         {
             mazeError = "ERROR: Maze does not have enough rows";
-            mazeLoaded = false;
             return false;
         }
 
@@ -208,28 +276,21 @@ bool loadMaze()
                 cell = line[col];
             }
 
-            if (cell == WALL)
+            if (cell == WALL || cell == EMPTY)
             {
-                maze[row][col] = WALL;
+                maze[row][col] = cell;
             }
-            else if (cell == PELLET)
+            else if (cell == PELLET || cell == POWER)
             {
-                maze[row][col] = PELLET;
-            }
-            else if (cell == POWER)
-            {
-                maze[row][col] = POWER;
-            }
-            else if (cell == EMPTY)
-            {
-                maze[row][col] = EMPTY;
+                maze[row][col] = cell;
+                pelletsRemaining++;          // count both pellet types while loading
             }
             else if (cell == PLAYER_START)
             {
                 maze[row][col] = EMPTY;
                 playerRow = row;
                 playerCol = col;
-                playerFound = true;
+                playerCount++;
             }
             else if (cell == GHOST_START)
             {
@@ -239,23 +300,26 @@ bool loadMaze()
             else
             {
                 mazeError = "ERROR: Invalid symbol in maze.txt";
-                mazeLoaded = false;
                 return false;
             }
         }
     }
 
-    if (!playerFound)
+    if (playerCount != 1)
     {
-        mazeError = "ERROR: Maze must contain one S player start";
-        mazeLoaded = false;
+        mazeError = "ERROR: Maze must contain exactly one S player start";
         return false;
     }
 
-    if (ghostCount != 4)
+    if (ghostCount != GHOST_COUNT)
     {
         mazeError = "ERROR: Maze must contain exactly 4 E ghost starts";
-        mazeLoaded = false;
+        return false;
+    }
+
+    if (pelletsRemaining == 0)
+    {
+        mazeError = "ERROR: Maze has no pellets";
         return false;
     }
 
@@ -265,8 +329,16 @@ bool loadMaze()
 
 int main()
 {
+    if (!loadMaze())
+    {
+        cout << mazeError << "\n";
+        return 1;
+    }
+
     sf::RenderWindow window(sf::VideoMode({ WIN_W, WIN_H }), "Pac-Man");
     window.setFramerateLimit(60);
+
+    gameState = PLAYING;   // TEMPORARY: remove once your menu starts the game
 
     while (window.isOpen())
     {
