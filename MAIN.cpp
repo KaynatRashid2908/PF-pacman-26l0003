@@ -4,6 +4,8 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include<cstdlib>
+#include<ctime>
 
 using namespace std;
 
@@ -19,13 +21,27 @@ const int DOWN = 2;
 const int LEFT = 3;
 const int RIGHT = 4;
 const int PLAYER_SPEED_FRAMES = 8;
+const int GHOST_MOVE_FRAMES = 10;
+constexpr int GHOST_COUNT = 4;
+const int BLUE_GHOST_MOVE_FRAMES = 16;
+const int GHOST_EAT_SCORE = 200;
+const int START_LIVES = 3;   // placeholder until Feature 6
+
+const sf::Color GHOST_COLORS[GHOST_COUNT] =
+{
+    sf::Color::Red,                // ghost 0 (chaser)
+    sf::Color(255, 184, 255),      // ghost 1 (wanderer)
+    sf::Color::Cyan,               // ghost 2 (chaser)
+    sf::Color(255, 184, 82)        // ghost 3 (wanderer)
+};
+const sf::Color BLUE_GHOST_COLOR(33, 33, 255);
+
 
 const int MENU = 0, PLAYING = 1, GAME_OVER = 2, WIN = 3;
 
 // Maze symbols (must match maze.txt exactly)
 const char WALL = 'X', PELLET = '.', POWER = '0', EMPTY = '_';
 const char PLAYER_START = 'S', GHOST_START = 'E';
-constexpr int GHOST_COUNT = 4;
 const int PELLET_SCORE = 10;
 const int POWER_PELLET_SCORE = 50;      // spec: 50 points
 const int POWER_MODE_FRAMES = 300;      // 5 seconds at 60 FPS
@@ -35,8 +51,20 @@ char maze[ROWS][COLS];
 int gameState = MENU;
 int playerRow = 0;
 int playerCol = 0;
-int ghostRows[GHOST_COUNT];
-int ghostCols[GHOST_COUNT];
+int ghostRow[GHOST_COUNT];
+int ghostCol[GHOST_COUNT];
+int ghostDir[GHOST_COUNT];          // 0 = no direction yet
+int ghostStartRow[GHOST_COUNT];
+int ghostStartCol[GHOST_COUNT];
+int ghostPrevRow[GHOST_COUNT];
+int ghostPrevCol[GHOST_COUNT];
+int ghostMoveCounter[GHOST_COUNT];
+bool ghostBlue[GHOST_COUNT];
+
+int playerStartRow = 0, playerStartCol = 0;
+int playerPrevRow = 0, playerPrevCol = 0;
+int lives = START_LIVES;
+
 int requestedDirection = 0;   // 0 none, 1 up, 2 down, 3 left, 4 right
 int moveCounter = 0;
 
@@ -92,6 +120,188 @@ bool canMove(int row, int col)
     }
     return true;
 }
+int oppositeDirection(int dir)
+{
+    if (dir == UP) return DOWN;
+    if (dir == DOWN) return UP;
+    if (dir == LEFT) return RIGHT;
+    if (dir == RIGHT) return LEFT;
+    return 0;
+}
+
+void getNextCell(int row, int col, int dir, int& newRow, int& newCol)
+{
+    newRow = row;
+    newCol = col;
+    if (dir == UP) newRow--;
+    else if (dir == DOWN) newRow++;
+    else if (dir == LEFT) newCol--;
+    else if (dir == RIGHT) newCol++;
+}
+
+int distanceToPlayer(int row, int col)
+{
+    return abs(row - playerRow) + abs(col - playerCol);
+}
+
+void sendGhostHome(int i)
+{
+    ghostRow[i] = ghostStartRow[i];
+    ghostCol[i] = ghostStartCol[i];
+    ghostPrevRow[i] = ghostRow[i];
+    ghostPrevCol[i] = ghostCol[i];
+    ghostDir[i] = 0;
+    ghostMoveCounter[i] = 0;
+    ghostBlue[i] = false;
+}
+
+void resetGhosts()
+{
+    for (int i = 0; i < GHOST_COUNT; i++)
+        sendGhostHome(i);
+}
+
+void turnGhostsBlue()
+{
+    for (int i = 0; i < GHOST_COUNT; i++)
+        ghostBlue[i] = true;
+}
+
+void turnGhostsNormal()
+{
+    for (int i = 0; i < GHOST_COUNT; i++)
+        ghostBlue[i] = false;
+}
+
+// Returns the direction ghost i should take, or 0 if it cannot move.
+int chooseGhostDirection(int i)
+{
+    const int order[4] = { UP, LEFT, DOWN, RIGHT };   // tie-break order
+    int options[4];
+    int count = 0;
+    int back = oppositeDirection(ghostDir[i]);
+
+    for (int k = 0; k < 4; k++)
+    {
+        int d = order[k];
+        if (d == back)
+            continue;                                  // never turn back...
+        int r, c;
+        getNextCell(ghostRow[i], ghostCol[i], d, r, c);
+        if (canMove(r, c))
+            options[count++] = d;
+    }
+
+    if (count == 0)                                    // ...unless it is the only way
+    {
+        if (back == 0)
+            return 0;
+        int r, c;
+        getNextCell(ghostRow[i], ghostCol[i], back, r, c);
+        return canMove(r, c) ? back : 0;
+    }
+
+    bool chaser = (i == 0 || i == 2) && !ghostBlue[i];
+    if (!chaser)
+        return options[rand() % count];                // wanderers and blue ghosts
+
+    int best = options[0];
+    int r, c;
+    getNextCell(ghostRow[i], ghostCol[i], best, r, c);
+    int bestDist = distanceToPlayer(r, c);
+
+    for (int k = 1; k < count; k++)
+    {
+        getNextCell(ghostRow[i], ghostCol[i], options[k], r, c);
+        int dist = distanceToPlayer(r, c);
+        if (dist < bestDist)                           // strict < keeps up, left, down, right order on ties
+        {
+            bestDist = dist;
+            best = options[k];
+        }
+    }
+    return best;
+}
+
+void moveGhosts()
+{
+    for (int i = 0; i < GHOST_COUNT; i++)
+    {
+        ghostMoveCounter[i]++;
+        int needed = ghostBlue[i] ? BLUE_GHOST_MOVE_FRAMES : GHOST_MOVE_FRAMES;
+        if (ghostMoveCounter[i] < needed)
+            continue;
+        ghostMoveCounter[i] = 0;
+
+        int dir = chooseGhostDirection(i);
+        if (dir == 0)
+            continue;
+
+        int r, c;
+        getNextCell(ghostRow[i], ghostCol[i], dir, r, c);
+        ghostRow[i] = r;
+        ghostCol[i] = c;
+        ghostDir[i] = dir;
+    }
+}
+
+void savePreviousPositions()
+{
+    playerPrevRow = playerRow;
+    playerPrevCol = playerCol;
+    for (int i = 0; i < GHOST_COUNT; i++)
+    {
+        ghostPrevRow[i] = ghostRow[i];
+        ghostPrevCol[i] = ghostCol[i];
+    }
+}
+
+// Placeholder: adjust when you build Feature 6.
+void playerCaught()
+{
+    lives--;
+    if (lives <= 0)
+    {
+        gameState = GAME_OVER;
+        return;
+    }
+    playerRow = playerStartRow;
+    playerCol = playerStartCol;
+    requestedDirection = 0;
+    moveCounter = 0;
+    powerModeActive = false;
+    powerModeTimer = 0;
+    resetGhosts();
+}
+
+// Returns true if the player was caught.
+bool checkGhostCollisions()
+{
+    for (int i = 0; i < GHOST_COUNT; i++)
+    {
+        // Case 1: same cell after moving
+        bool sameCell = (playerRow == ghostRow[i] && playerCol == ghostCol[i]);
+
+        // Case 2: they swapped cells in the same step
+        bool swapped = (playerRow == ghostPrevRow[i] && playerCol == ghostPrevCol[i] &&
+            ghostRow[i] == playerPrevRow && ghostCol[i] == playerPrevCol);
+
+        if (!sameCell && !swapped)
+            continue;
+
+        if (ghostBlue[i])
+        {
+            score += GHOST_EAT_SCORE;
+            sendGhostHome(i);
+        }
+        else
+        {
+            playerCaught();
+            return true;
+        }
+    }
+    return false;
+}
 
 // Eats whatever is under the player. Called after every successful player move.
 void checkPelletCollection()
@@ -109,6 +319,9 @@ void checkPelletCollection()
         score += POWER_PELLET_SCORE;
         maze[playerRow][playerCol] = EMPTY;
         pelletsRemaining--;
+        powerModeActive = true;
+        powerModeTimer = POWER_MODE_FRAMES;
+        turnGhostsBlue();                
 
         // Starts blue mode, or restarts the 5 seconds if it is already running.
         powerModeActive = true;
@@ -134,6 +347,7 @@ void updatePowerMode()
     {
         powerModeTimer = 0;
         powerModeActive = false;
+        turnGhostsNormal();
     }
 }
 
@@ -193,8 +407,17 @@ void updateGame()
         break;
     case PLAYING:
         updatePowerMode();
+        savePreviousPositions();
         movePlayer();
+        if (gameState != PLAYING)
+            break;      // player just won
+        if (checkGhostCollisions())
+            break;    // caught right after the player moved
+        moveGhosts();
+        checkGhostCollisions();               // caught after the ghosts moved
         break;
+    
+       
     case GAME_OVER:
         break;
     case WIN:
@@ -229,6 +452,7 @@ bool loadMaze()
     requestedDirection = 0;
     moveCounter = 0;
     mazeLoaded = false;
+    lives = START_LIVES;
 
     ifstream file("maze.txt");
 
@@ -290,11 +514,19 @@ bool loadMaze()
                 maze[row][col] = EMPTY;
                 playerRow = row;
                 playerCol = col;
+                playerStartRow = row;
+                playerStartCol = col;
                 playerCount++;
             }
             else if (cell == GHOST_START)
             {
                 maze[row][col] = EMPTY;
+                if (ghostCount < GHOST_COUNT)
+                {
+                    ghostStartRow[ghostCount] = row;
+                    ghostStartCol[ghostCount] = col;
+
+                }
                 ghostCount++;
             }
             else
@@ -313,7 +545,8 @@ bool loadMaze()
 
     if (ghostCount != GHOST_COUNT)
     {
-        mazeError = "ERROR: Maze must contain exactly 4 E ghost starts";
+        
+            mazeError = "ERROR: Maze must contain exactly 4 E ghost starts";
         return false;
     }
 
@@ -322,6 +555,7 @@ bool loadMaze()
         mazeError = "ERROR: Maze has no pellets";
         return false;
     }
+    resetGhosts();
 
     mazeLoaded = true;
     return true;
@@ -337,8 +571,10 @@ int main()
 
     sf::RenderWindow window(sf::VideoMode({ WIN_W, WIN_H }), "Pac-Man");
     window.setFramerateLimit(60);
+    srand((unsigned)time(0));
 
     gameState = PLAYING;   // TEMPORARY: remove once your menu starts the game
+
 
     while (window.isOpen())
     {
