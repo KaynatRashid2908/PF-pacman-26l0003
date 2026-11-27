@@ -75,6 +75,8 @@ int powerModeTimer = 0;
 
 bool mazeLoaded = false;
 string mazeError = "";
+sf::Font hudFont;
+bool hudFontLoaded = false;
 
 // ---------- Functions ----------
 
@@ -424,7 +426,53 @@ void updateGame()
         break;
     }
 }
+bool loadHudFont()
+{
+    const string paths[] = {
+         "arial.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
+    };
+    for (const string& path : paths)
+    {
+        if (hudFont.openFromFile(path))
+        {
+            hudFontLoaded = true;
+            return true;
+        }
+    }
+    hudFontLoaded = false;
+    return false;
+}
+void drawHUD(sf::RenderWindow& window)
+{
+    sf::RectangleShape strip({ (float)WIN_W,(float)HUD });
+    strip.setFillColor(sf::Color(15, 15, 40));
+    window.draw(strip);
+    if (hudFontLoaded)
+    {
+        sf::Text scoreText(hudFont, "SCORE:" + to_string(score), 24);
+        scoreText.setFillColor(sf::Color::White);
+        scoreText.setPosition({ 15.f,10.f });
+        window.draw(scoreText);
+
+        sf::Text livesText(hudFont, "LIVES:", 24);
+        livesText.setFillColor(sf::Color::White);
+        livesText.setPosition({ 330.f, 10.f });
+        window.draw(livesText);
+
+    }
+    for (int i = 0;i < lives;i++)
+    {
+        sf::CircleShape life(10.f);
+        life.setFillColor(sf::Color::Yellow);
+        life.setPosition({ 430.f + i * 30.f,15.f });
+        window.draw(life);
+    }
+
+}
 void drawGame(sf::RenderWindow& window)
 {
     window.clear(sf::Color::Black);
@@ -433,10 +481,13 @@ void drawGame(sf::RenderWindow& window)
     case MENU:
         break;
     case PLAYING:
+        drawHUD(window);
         break;
     case GAME_OVER:
+        drawHUD(window);
         break;
     case WIN:
+        drawHUD(window);
         break;
     }
     window.display();
@@ -572,6 +623,9 @@ int main()
     sf::RenderWindow window(sf::VideoMode({ WIN_W, WIN_H }), "Pac-Man");
     window.setFramerateLimit(60);
     srand((unsigned)time(0));
+
+    if (!loadHudFont())
+        cout << "could not load aial.ttf,score text will not show\n";
 
     gameState = PLAYING;   // TEMPORARY: remove once your menu starts the game
 
